@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { Drone, defaults, partialTarget, partialFrequencyAt, sanitize } from "../audio.js";
+import { Drone, defaults, partialTarget, partialFrequencyAt, bloomLevel, spectrumLevels, sanitize } from "../audio.js";
 class Param {
   constructor() {
     this.value = 0;
@@ -15,7 +15,8 @@ class Param {
   }
   cancelScheduledValues(t) { this.events.push(["cancel", t]); }
   cancelAndHoldAtTime(t) { this.events.push(["hold", t]); }
-  linearRampToValueAtTime(v) {
+  linearRampToValueAtTime(v, t) {
+    this.events.push(["linear", v, t]);
     this.value = v;
   }
   exponentialRampToValueAtTime(v, t) {
@@ -246,5 +247,62 @@ test("stop cancels a pending AudioContext resume", async () => {
   await p;
   assert.equal(d.running, false);
   assert.equal(d.ctx.oscs.length, 0);
+  await d.dispose();
+});
+
+test("Bloom unfolds in order with a bounded core and exact zero bypass", () => {
+  const targets = [0,1,2,3].map(i => partialTarget(69,i,defaults,48000));
+  for (const bloom of [0,0.1,1]) for (const harmonics of [0,0.7,1]) {
+    for (let age=0; age<20; age+=0.1) {
+      const levels=spectrumLevels(targets,{...defaults,bloom,harmonics},age);
+      assert.ok(2*levels.core+levels.partials.reduce((a,b)=>a+b,0)<=2+1e-12);
+      assert.ok(levels.core>0.45);
+    }
+  }
+  assert.equal(bloomLevel(0,0),0);
+  assert.ok(bloomLevel(0,1)>0);
+  assert.equal(bloomLevel(1,1),0);
+  assert.equal(bloomLevel(3,5),0);
+  assert.equal(bloomLevel(3,12),1);
+  assert.deepEqual(spectrumLevels(targets,{...defaults,bloom:0},20),{core:1,partials:[0,0,0,0]});
+});
+test("Bloom shares sources, restarts only on pitch/unmute and survives live controls", async () => {
+  Context.prototype.resume = async function () {};
+  const d=new Drone();
+  d.update({...d.settings,bloom:1,detune:0});
+  await d.play([40,40,50,55,59,64]);
+  const voices=[...d.voices];
+  assert.equal(d.ctx.oscs.length,36);
+  const p=voices[0].partials[0];
+  const ramps=p.gain.gain.events.filter(e=>e[0]==="linear");
+  assert.ok(ramps[0][1]===0);
+  assert.ok(ramps.at(-1)[1]>ramps[3][1]);
+  d.ctx.currentTime=2;
+  d.move([40,40,50,55,59,64]);
+  assert.equal(voices[0].bloomStart,0);
+  d.move([42,40,50,55,59,64]);
+  assert.equal(voices[0].bloomStart,2);
+  assert.equal(p.motion.end,2+d.settings.glide);
+  assert.ok(Math.abs(p.motion.to-2*voices[0].oscs[0].frequency.value)<1e-9);
+  const motion=p.motion;
+  d.update({...d.settings,bloom:0.3});
+  assert.equal(p.motion,motion);
+  assert.equal(voices[0].bloomStart,2);
+  for(let i=0;i<300;i++) {
+    d.ctx.currentTime+=0.01;
+    d.update({...d.settings,bloom:i%2,harmonics:i%3/2});
+    d.move([null,41,51,56,60,65]);
+    d.move([40,40,50,55,59,64]);
+  }
+  assert.deepEqual(d.voices,voices);
+  assert.equal(d.ctx.oscs.length,36);
+  d.update({...d.settings,bloom:0,harmonics:0});
+  assert.equal(voices[0].tone.gain.value,1);
+  assert.ok(voices.every(v=>v.partials.every(p=>p.gain.gain.value===0)));
+  d.stop();
+  assert.ok(d.ctx.oscs.every(o=>o.stopped&&o.disconnected));
+  await d.play([40,40,50,55,59,64]);
+  d.update({...d.settings,bloom:1});
+  assert.equal(d.voices[0].partials.length,4);
   await d.dispose();
 });
