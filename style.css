@@ -5,3 +5,6 @@
 .analysis{font-size:11px;min-width:0}.analysis label{display:flex;align-items:center;gap:8px}.analysis select{min-width:0;max-width:100%;font-size:11px}.analysis small{display:block;color:#98b6b6;line-height:1.4}#keyfield{display:flex;gap:6px;margin-top:4px}#keyfield span{flex:1;background:linear-gradient(90deg,#426658 var(--support),#1c2c30 var(--support));padding:3px 6px;border-radius:3px;font-size:10px}.candidate small{line-height:1.4}#instrument{min-height:0}@media(max-width:600px){.analysis label{display:block}#keyfield span{font-size:9px}.candidate small{font-size:9px}}
 
 #instrument{grid-template-rows:auto auto minmax(60px,1fr) auto auto}.candidate small{white-space:normal;overflow-wrap:anywhere}.candidate strong{font-size:clamp(11px,1.5vw,19px)}.analysis small{letter-spacing:0;margin-top:3px}.readout h1{margin:3px 0}#keyfield{margin-bottom:4px}@media(max-width:700px){#instrument{grid-template-rows:auto auto minmax(55px,1fr) auto auto}.candidate small{max-height:5.8em;overflow:auto}main{min-height:730px}}
+
+[data-preview]{touch-action:none;user-select:none;-webkit-user-select:none}
+[data-preview]:active{background:#426658}

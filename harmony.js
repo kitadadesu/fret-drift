@@ -149,6 +149,8 @@ export function createContext(v) {
   return {
     origin: [...v],
     accepted: [[...v]],
+    acceptedModes: ["initial"],
+    resolutionAnchor: null,
     keys,
     center: keyId(keys[0]),
     initialKey: null,
@@ -164,9 +166,22 @@ export function selectKey(state, id) {
       score: k.score + (keyId(k) === id ? 3 : 0),
     })),
   );
-  return { ...state, keys, center: id, initialKey: id };
+  return {
+    ...state,
+    keys,
+    center: id,
+    initialKey: id,
+    resolutionAnchor: state.resolutionAnchor
+      ? {
+          ...state.resolutionAnchor,
+          key: { ...keys.find((k) => keyId(k) === id) },
+        }
+      : null,
+  };
 }
-export function accept(state, v) {
+export function accept(state, v, mode = "normal") {
+  if (!["normal", "edge"].includes(mode))
+    throw new Error("Unknown adoption mode");
   if (!valid(v) || !pitches(v).length)
     throw new Error("Expected six MIDI/mute slots");
   const accepted = [...state.accepted.slice(-15).map((v) => [...v]), [...v]],
@@ -180,7 +195,22 @@ export function accept(state, v) {
   const incumbent = keys.find((k) => keyId(k) === state.center);
   const center =
     keys[0].score - incumbent.score > 0.55 ? keyId(keys[0]) : state.center;
-  return { ...state, accepted, keys, center, steps: state.steps + 1 };
+  return {
+    ...state,
+    accepted,
+    keys,
+    center,
+    steps: state.steps + 1,
+    acceptedModes: [...(state.acceptedModes ?? ["initial"]).slice(-15), mode],
+    // Capture A and the history-derived key before each actual edge adoption B.
+    resolutionAnchor:
+      mode === "edge"
+        ? {
+            voicing: [...state.accepted.at(-1)],
+            key: { ...centerKey(state) },
+          }
+        : null,
+  };
 }
 export const centerKey = (state) =>
   state.keys.find((k) => keyId(k) === state.center) ?? state.keys[0];
@@ -290,9 +320,55 @@ function motif(state, k, degree) {
   }
   return 0;
 }
+// Relative tension: chromatic color plus close dissonances. Bounded, register independent.
+export function tension(v, k) {
+  const set = pcs(v),
+    scale = scaleOf(k);
+  let value = set.filter((p) => !scale.includes(p)).length * 2;
+  for (let i = 0; i < set.length; i++)
+    for (let j = i + 1; j < set.length; j++) {
+      const d = Math.min(mod12(set[i] - set[j]), mod12(set[j] - set[i]));
+      if (d === 1) value += 0.7;
+      if (d === 6) value += 0.5;
+    }
+  return value;
+}
+export function resolutionScore(b, c, state) {
+  const anchor = state.resolutionAnchor;
+  if (!anchor || state.acceptedModes?.at(-1) !== "edge") return 0;
+  const scale = scaleOf(anchor.key),
+    target = pcs(c);
+  const color = pcs(b).filter((p) => !scale.includes(p));
+  const resolved = color.reduce(
+    (sum, p) =>
+      sum +
+      (target.includes(p)
+        ? -0.5
+        : target.some((q) => Math.min(mod12(q - p), mod12(p - q)) === 1)
+          ? 1
+          : 0),
+    0,
+  );
+  const a = state.accepted.at(-2) ?? anchor.voicing;
+  const aCommon = pcs(a).filter((p) => target.includes(p)).length;
+  const anchorCommon = pcs(anchor.voicing).filter((p) =>
+    target.includes(p),
+  ).length;
+  const degree = classify(c, anchor.key).degree;
+  return (
+    (tension(b, anchor.key) - tension(c, anchor.key)) * 1.8 +
+    resolved * 1.4 +
+    aCommon * 0.3 +
+    anchorCommon * 0.15 +
+    ([0, 2, 5].includes(degree) ? 1.2 : 0) -
+    (soundKey(c) === soundKey(anchor.voicing) ? 1.5 : 0)
+  );
+}
 export function candidatePool(v, state = createContext(v), edge = false) {
   if (!valid(v) || !pitches(v).length) return [];
-  const k = centerKey(state),
+  const resolving =
+    !edge && state.acceptedModes?.at(-1) === "edge" && state.resolutionAnchor;
+  const k = resolving ? state.resolutionAnchor.key : centerKey(state),
     scale = scaleOf(k),
     count = pitches(v).length,
     sourceDegree = classify(v, k).degree;
@@ -329,6 +405,7 @@ export function candidatePool(v, state = createContext(v), edge = false) {
       .filter((a) => soundKey(a) === soundKey(result)).length;
     const score =
       harmonic +
+      (resolving ? resolutionScore(v, result, state) : 0) +
       cmp.common.length * 1.1 +
       cmp.retained.length * 0.5 +
       originCommon * 0.35 * 0.9 ** state.steps -
@@ -352,6 +429,7 @@ export function candidatePool(v, state = createContext(v), edge = false) {
       key: keyLabel(k),
       reasons: [
         kind,
+        resolving ? "緊張→解決 · 採用前の調性を考慮" : "",
         `${cmp.common.length} 共通音 · Δ${cmp.stringMotion} st`,
         outside ? `${outside} 音が推定音階の外` : `${keyLabel(k)} の音集合`,
         sourceDegree === 4 && degree === 0 ? "Ⅴ→Ⅰ の解決" : "",

@@ -11,6 +11,7 @@ import {
   soundKey,
   scaleOf,
 } from "./harmony.js";
+import { bindHold } from "./hold.js";
 import { Drone } from "./audio.js";
 const $ = (id) => document.getElementById(id),
   engine = new Drone();
@@ -20,7 +21,6 @@ let current = [],
   choices = [],
   edge = false,
   seed = 0,
-  previewTimer,
   previewIndex = -1,
   active = false,
   tab = "tone",
@@ -28,7 +28,7 @@ let current = [],
   seen = [],
   choiceNames = [],
   currentName = null,
-  previewGeneration = 0;
+  runGeneration = 0;
 
 const freshSeed = () => crypto.getRandomValues(new Uint32Array(1))[0];
 const presets = [
@@ -51,9 +51,10 @@ function strings(t = presets[0], f = [0, 2, 2, 0, 0, 0]) {
 strings();
 $("preset").onchange = (e) => strings(presets[e.target.selectedIndex]);
 function cancelPreview() {
-  clearTimeout(previewTimer);
+  const wasPreviewing = previewIndex >= 0;
   previewIndex = -1;
-  previewGeneration++;
+  if (wasPreviewing && active) engine.move(current);
+  $("status").textContent = active ? "● DRIFTING" : "■ STOPPED";
 }
 function display() {
   $("chord").textContent = currentName ?? analyze(current);
@@ -63,6 +64,10 @@ function display() {
   $("back").disabled = !history.length;
   $("stop").disabled = !active;
   $("resume").disabled = active;
+  document.querySelectorAll("[data-preview]").forEach((b) => {
+    b.disabled = !active;
+    b.textContent = active ? "押して試聴" : "再開して試聴";
+  });
   const motion = current.reduce(
     (s, n, i) =>
       s + (n !== null && previous[i] != null ? Math.abs(n - previous[i]) : 0),
@@ -116,17 +121,29 @@ function proposals() {
         .join(
           " ",
         )}</small><div><button aria-label="候補${i + 1}を試聴">試聴</button><button aria-label="候補${i + 1}を採用">${i + 1} ↗ 採用</button></div>`;
-      el.querySelectorAll("button")[0].onclick = () => preview(i);
+      const audition = el.querySelectorAll("button")[0];
+      audition.dataset.preview = "";
+      audition.disabled = !active;
+      audition.textContent = active ? "押して試聴" : "再開して試聴";
+      bindHold(
+        audition,
+        () => preview(i),
+        () => {
+          if (previewIndex === i) cancelPreview();
+        },
+      );
       el.querySelectorAll("button")[1].onclick = () => adopt(i);
       return el;
     }),
   );
 }
 async function run(v) {
+  const id = ++runGeneration;
   try {
     await engine.play(v);
-    return engine.running;
+    return id === runGeneration ? engine.running : null;
   } catch (e) {
+    if (id !== runGeneration) return null;
     engine.stop();
     active = false;
     $("status").textContent = "音声を開始できません。再開を押してください。";
@@ -156,33 +173,20 @@ $("start").onclick = async () => {
   context = createContext(current);
   seen = [];
   seed = freshSeed();
-  active = await run(current);
+  const running = await run(current);
+  if (running === null) return;
+  active = running;
   $("setup").hidden = true;
   $("instrument").hidden = false;
   $("status").textContent = active ? "● DRIFTING" : "停止中";
   display();
   proposals();
 };
-async function preview(i) {
-  cancelPreview();
+function preview(i) {
+  if (!active || !choices[i]) return;
   previewIndex = i;
-  const token = previewGeneration,
-    wasActive = active;
-  const running = await run(choices[i]);
-  if (token !== previewGeneration) return;
-  active = running;
-  $("status").textContent = `◉ 候補 ${i + 1} を試聴中`;
-  previewTimer = setTimeout(async () => {
-    previewIndex = -1;
-    if (wasActive) {
-      const running = await run(current);
-      if (token !== previewGeneration) return;
-      active = running;
-      $("status").textContent = "● DRIFTING";
-    } else stop();
-    display();
-  }, 2500);
-  display();
+  engine.move(choices[i]);
+  $("status").textContent = `◉ 候補 ${i + 1} を試聴中（離すと戻る）`;
 }
 async function adopt(i) {
   if (!choices[i]) return;
@@ -198,7 +202,7 @@ async function adopt(i) {
   previous = [...current];
   current = [...choices[i]];
   currentName = choiceNames[i];
-  context = accept(context, current);
+  context = accept(context, current, edge ? "edge" : "normal");
   seen = [];
   seed++;
   if (active) engine.move(current);
@@ -207,6 +211,7 @@ async function adopt(i) {
   proposals();
 }
 function stop() {
+  runGeneration++;
   cancelPreview();
   engine.stop();
   active = false;
@@ -217,7 +222,9 @@ $("stop").onclick = stop;
 $("resume").onclick = async () => {
   cancelPreview();
   if (!current.length) return;
-  active = await run(current);
+  const running = await run(current);
+  if (running === null) return;
+  active = running;
   $("status").textContent = active ? "● DRIFTING" : "停止中";
   display();
 };
@@ -329,6 +336,10 @@ document.addEventListener("keydown", (e) => {
     e.preventDefault();
     $("back").click();
   }
+});
+window.addEventListener("blur", cancelPreview);
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) cancelPreview();
 });
 window.addEventListener("pagehide", () => {
   cancelPreview();
