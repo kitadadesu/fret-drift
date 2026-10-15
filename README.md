@@ -10,7 +10,7 @@ Serve this directory with any static HTTP server. Node 22+: `npm test` and `npm 
 
 Tuning inputs accept note + octave (E2, Bb3). Frets accept 0–24 or x. Start explicitly unlocks Web Audio. Preview lasts 2.5 seconds and restores the current drone (or silence if stopped). Adoption commits the selected six-string voicing. Space toggles transport, 1–4 adopt, left arrow returns, Escape stops. Keyboard shortcuts do not override focused form controls. Tone and Space tabs keep all controls accessible on small screens. Very short viewports allow page scrolling to preserve control accessibility.
 
-ADSR applies to new voices; surviving string voices glide without retriggering. Release applies to muted voices; Stop uses a short fade and silences effect tails. Two detuned sine oscillators per string, gain bounded per oscillator, filtered feedback limited to 0.65, delay 0.05–1.5s, compressor before destination. Settings update with smoothing. No microphone, account, analytics or server storage.
+ADSR applies to new voices; surviving string voices glide without retriggering. Release applies to muted voices; Stop follows Release and silences effect tails. Restart clears retiring voices before opening the output again. Two detuned sine oscillators per string, gain bounded per oscillator, filtered feedback limited to 0.65, delay 0.05–1.5s, compressor before destination. Settings update with smoothing. No microphone, account, analytics or server storage.
 
 ## Reference and independence
 
