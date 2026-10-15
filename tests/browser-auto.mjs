@@ -158,6 +158,36 @@ try {
     results.push({ name, geometry, errors });
     await page.close();
   }
+  // Real browser timers: Playwright's clock substitutes functions that mask receiver errors.
+  const nativePage = await browser.newPage();
+  const nativeErrors = [];
+  nativePage.on('pageerror', e => nativeErrors.push(e.message));
+  await nativePage.goto(process.env.BASE_URL || 'http://127.0.0.1:8787');
+  await nativePage.evaluate(() => {
+    const connect = AudioNode.prototype.connect;
+    AudioNode.prototype.connect = function (dest, ...args) {
+      if (dest instanceof AudioDestinationNode) {
+        const silence = this.context.createGain(); silence.gain.value = 0;
+        connect.call(this, silence); return connect.call(silence, dest);
+      }
+      return connect.call(this, dest, ...args);
+    };
+  });
+  await nativePage.locator('#start').click();
+  await nativePage.getByRole('slider', {name: 'Pace', exact: true}).fill('4');
+  await nativePage.locator('#auto').click();
+  assert.equal(await nativePage.locator('#auto').getAttribute('aria-pressed'), 'true');
+  const beforeNative = await nativePage.locator('#pitches').textContent();
+  await nativePage.waitForFunction(() => document.querySelector('#autostatus').textContent.includes('AUTO →'), {timeout: 8000});
+  assert.notEqual(await nativePage.locator('#pitches').textContent(), beforeNative);
+  await nativePage.getByRole('button', {name: '候補1を採用', exact: true}).click();
+  assert.match(await nativePage.locator('#autostatus').textContent(), /候補 1 →/);
+  assert.ok(await nativePage.locator('#candidates article').count() > 0);
+  await nativePage.locator('#auto').click();
+  await nativePage.locator('#back').click();
+  await nativePage.getByRole('button', {name: '候補1を採用', exact: true}).click();
+  assert.deepEqual(nativeErrors, []);
+  await nativePage.close();
   // Deferred AudioContext readiness cannot arm AUTO or revive playback after Stop.
   const page = await browser.newPage();
   await page.goto(process.env.BASE_URL || "http://127.0.0.1:8787");

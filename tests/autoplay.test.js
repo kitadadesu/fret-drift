@@ -227,3 +227,16 @@ test("long seeded auto walks retain six slots, key state, mute positions, bounde
   }
   assert.ok(edges > 0);
 });
+
+// Browser natives reject AutoClock as their receiver. Fake clocks alone mask this.
+test("default timers retain the global receiver for scheduling and cancellation", () => {
+  const originalSet = globalThis.setTimeout, originalClear = globalThis.clearTimeout;
+  let scheduled = 0, cleared = 0;
+  try {
+    globalThis.setTimeout = function () { assert.equal(this, globalThis); scheduled++; return 42; };
+    globalThis.clearTimeout = function (id) { assert.equal(this, globalThis); assert.equal(id, 42); cleared++; };
+    const clock = new AutoClock({ tick() {}, ready: () => true, delay: () => 100 });
+    clock.start(); clock.replan(); clock.stop();
+    assert.equal(scheduled, 2); assert.equal(cleared, 2);
+  } finally { globalThis.setTimeout = originalSet; globalThis.clearTimeout = originalClear; }
+});
