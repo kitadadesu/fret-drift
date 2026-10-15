@@ -112,6 +112,12 @@ for (const [name, width, height] of [
   });
   await page.getByRole("slider", { name: "Glide", exact: true }).fill("0.02");
   await page.getByRole("slider", { name: "Attack", exact: true }).fill("0.01");
+  if (process.env.TEST_SPECTRUM) {
+    await page.locator('[data-tab="spectrum"]').click();
+    await page.getByRole('slider', {name:'Harmonics',exact:true}).fill('0.8');
+    await page.getByRole('slider', {name:'Spectral Drift',exact:true}).fill('1');
+    await page.locator('[data-tab="tone"]').click();
+  }
   await page.waitForTimeout(100);
   const originalFrequencies = await page.evaluate(async () => {
     const { parse, frequency } = await import("./music.js");
@@ -184,7 +190,7 @@ for (const [name, width, height] of [
     return Math.max(...a.map(Math.abs));
   });
   const restored = await page.evaluate(() =>
-    audioProbe.oscs.slice(-12).map((o) => o.frequency.value),
+    audioProbe.oscs.slice(0, 12).map((o) => o.frequency.value),
   );
   assert.ok(
     restored.every((v, i) => Math.abs(v - originalFrequencies[i]) < 0.01),
