@@ -2,6 +2,7 @@ import { frequency } from "./music.js";
 export const defaults = {
   glide: 2.5,
   harmonics: 0,
+  bloom: 0,
   inharmonicity: 0.12,
   drift: 0.4,
   detune: 7,
@@ -18,6 +19,7 @@ export const defaults = {
 const limits = {
   glide: [0.02, 8],
   harmonics: [0, 1],
+  bloom: [0, 1],
   inharmonicity: [0, 1],
   drift: [0, 1],
   detune: [0, 30],
@@ -54,6 +56,20 @@ const disconnectVoice = (v) => {
   v.tone.disconnect();
   v.partials.forEach((p) => p.gain.disconnect());
 };
+// Bloom shares Drift's four sources; it needs neither timers nor more oscillators.
+const bloomWeights = [0.20, 0.12, 0.07, 0.035];
+export function bloomLevel(index, age) {
+  const delay = [0.3, 1.8, 3.8, 6][index];
+  const duration = [3, 4, 5, 6][index];
+  const x = Math.max(0, Math.min(1, (age - delay) / duration));
+  return x * x * (3 - 2 * x);
+}
+export function spectrumLevels(targets, settings, age) {
+  const weights = targets.map((p, i) => settings.harmonics * p.weight +
+    settings.bloom * bloomWeights[i] * bloomLevel(i, age) * (p.weight / partials[i].weight));
+  const norm = 1 / (1 + weights.reduce((a, b) => a + b, 0));
+  return { core: norm, partials: weights.map(w => 2 * w * norm) };
+}
 export function partialTarget(midi, index, settings, sampleRate) {
   const p = partials[index];
   const raw = frequency(midi) * p.ratio * (1 + p.stretch * settings.inharmonicity);
@@ -127,8 +143,12 @@ export class Drone {
     this.voices.forEach((v) => {
       if (!v) return;
       v.oscs.forEach((o, j) => p(o.detune, j ? s2.detune : -s2.detune));
+      if (previous.bloom === 0 && s2.bloom > 0) v.bloomStart = t;
       if (["harmonics", "inharmonicity", "drift", "glide"].some((k) => previous[k] !== s2[k]))
         this.spectrum(v);
+      else if (previous.bloom !== s2.bloom) {
+        this.spectrum(v, false);
+      }
     });
   }
   async play(notes) {
@@ -174,13 +194,14 @@ export class Drone {
           o.start();
           return o;
         });
-        v = this.voices[i] = { gain, tone, oscs, partials: [], midi: n };
+        v = this.voices[i] = { gain, tone, oscs, partials: [], midi: n, bloomStart: t };
         gain.gain.linearRampToValueAtTime(0.035, t + s.attack);
         gain.gain.linearRampToValueAtTime(
           0.035 * s.sustain,
           t + s.attack + s.decay,
         );
       } else {
+        if (v.midi !== n || v.muted) v.bloomStart = t;
         v.midi = n;
         const unmuting = v.muted;
         v.muted = false;
@@ -200,14 +221,14 @@ export class Drone {
       this.spectrum(v);
     });
   }
-  spectrum(v) {
+  spectrum(v, retune = true) {
     const c = this.ctx, t = c.currentTime, s = this.settings;
-    const creating = s.harmonics > 0 && !v.partials.length;
+    const creating = (s.harmonics > 0 || s.bloom > 0) && !v.partials.length;
     if (creating) {
       v.partials = partials.map((_, i) => {
         const osc = c.createOscillator(), gain = c.createGain();
         osc.type = "sine";
-        osc.frequency.value = partialTarget(v.midi, i, s, c.sampleRate).frequency;
+        osc.frequency.value = partialTarget(v.midi, i, s.harmonics > 0 ? s : { ...s, inharmonicity: 0, drift: 0 }, c.sampleRate).frequency;
         gain.gain.value = 0;
         osc.connect(gain).connect(v.gain);
         osc.start();
@@ -215,17 +236,28 @@ export class Drone {
         return { osc, gain, motion: { from: hz, to: hz, start: t, end: t } };
       });
     }
-    const targets = partials.map((_, i) => partialTarget(v.midi, i, s, c.sampleRate));
-    // Absolute amplitude budget is always the legacy two-sine budget (2).
-    // Identical smoothing on all gains preserves this bound during knob changes.
-    const norm = 1 / (1 + s.harmonics * targets.reduce((a, p) => a + p.weight, 0));
-    v.tone.gain.setTargetAtTime(norm, t, 0.035);
+    const pitchSettings = s.harmonics > 0 ? s : { ...s, inharmonicity: 0, drift: 0 };
+    const targets = partials.map((_, i) => partialTarget(v.midi, i, pitchSettings, c.sampleRate));
+    // Every endpoint has the legacy absolute amplitude budget of 2. Linear
+    // interpolation between endpoints preserves that bound, including interrupts.
+    const params = [v.tone.gain, ...v.partials.map(p => p.gain.gain)];
+    params.forEach(p => p.cancelAndHoldAtTime(t));
+    const end = Math.max(t + 0.08, v.bloomStart + 12);
+    const times = [t + 0.08];
+    if (s.bloom > 0) {
+      for (let at = t + 0.33; at < end; at += 0.25) times.push(at);
+      if (end > times[0]) times.push(end);
+    }
+    for (const at of times) {
+      const levels = spectrumLevels(targets, s, at - v.bloomStart);
+      [levels.core, ...levels.partials].forEach((value, i) =>
+        params[i]?.linearRampToValueAtTime(value, at));
+    }
     v.partials.forEach((p, i) => {
       const target = targets[i];
-      p.gain.gain.setTargetAtTime(2 * s.harmonics * target.weight * norm, t, 0.035);
       // Track the exponential trajectory independently of AudioParam.value.
       // Explicitly anchor interruptions, including multiple events in one audio quantum.
-      if (!creating) {
+      if (!creating && retune) {
         const held = partialFrequencyAt(p.motion, t);
         p.osc.frequency.cancelScheduledValues(t);
         p.osc.frequency.setValueAtTime(held, t);

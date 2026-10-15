@@ -37,3 +37,7 @@ Open **倍音の漂流**. Raise **Harmonics** to 0.35–0.6, **Inharmonicity** t
 Harmonics 0 restores the original transparent two-sine sound and is the default. Inharmonicity 0 gives integer target ratios (2, 3, 4, 6); Spectral Drift 0 gives all partials the normal Glide time. Integer ratios apply at arrival: drifting partials are intentionally not locked to the moving fundamental. Each string follows its actual MIDI independently, including unisons.
 
 Partial amplitudes and the dry fundamental mix share a constant absolute amplitude budget with 35 ms smoothing. The existing master compressor and filtered delay feedback remain. Partials fade below a 0.45×sample-rate ceiling. They are created lazily, at most four per string (36 oscillators total). Once enabled they remain silently allocated at Harmonics 0 or mute for instant reversal, and are stopped/disconnected with the whole voice on Stop, restart or disposal. See [design and verification](docs/harmonic-drift.md).
+
+### Harmonic Bloom
+
+「倍音の漂流」のBloomで、澄んだ基音から約12秒かけて倍音が開きます。Harmonics・Reverb・Delayが0でも使えます。0でBloomなし。設計と検証は[Harmonic Bloom](docs/harmonic-bloom.md)。

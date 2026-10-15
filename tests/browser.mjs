@@ -24,6 +24,11 @@ for (const [name, width, height] of [
     errors = [];
   page.on("pageerror", (e) => errors.push(e.message));
   await page.goto(BASE_URL);
+  if (process.env.TEST_BLOOM) {
+    await page.locator('[data-tab="spectrum"]').click();
+    await page.getByRole('slider',{name:'Bloom',exact:true}).fill('1');
+    await page.locator('[data-tab="tone"]').click();
+  }
   // Read output without connecting it to hardware speakers; WebAudio graph is real.
   await page.evaluate(() => {
     const connect = AudioNode.prototype.connect;
@@ -190,7 +195,7 @@ for (const [name, width, height] of [
     return Math.max(...a.map(Math.abs));
   });
   const restored = await page.evaluate(() =>
-    audioProbe.oscs.slice(0, 12).map((o) => o.frequency.value),
+    audioProbe.oscs.filter(o => Math.abs(o.detune.value) > 0).slice(0, 12).map((o) => o.frequency.value),
   );
   assert.ok(
     restored.every((v, i) => Math.abs(v - originalFrequencies[i]) < 0.01),

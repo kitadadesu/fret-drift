@@ -276,6 +276,7 @@ const controls = {
     ["volume", "Volume", 0, 1, 0.01, ""],
   ],
   spectrum: [
+    ["bloom", "Bloom", 0, 1, 0.01, ""],
     ["harmonics", "Harmonics", 0, 1, 0.01, ""],
     ["inharmonicity", "Inharmonicity", 0, 1, 0.01, ""],
     ["drift", "Spectral Drift", 0, 1, 0.01, ""],
@@ -304,6 +305,7 @@ function renderControls() {
       });
       input.setAttribute("aria-label", title);
       input.title = {
+        bloom: "澄んだ基音の背後から、約12秒かけて倍音が花開く。0でBloomなし。",
         harmonics: "0で元の透明な音色。上げると鐘・ガラスのような部分音を追加。",
         inharmonicity: "0で整数倍。上げるほど部分音の比率をずらし、金属的な響きに。",
         drift: "0で全てGlideと同じ速度。上げると部分音ごとに移動速度が分かれます。",
