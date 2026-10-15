@@ -41,3 +41,9 @@ Partial amplitudes and the dry fundamental mix share a constant absolute amplitu
 ### Harmonic Bloom
 
 「倍音の漂流」のBloomで、澄んだ基音から約12秒かけて倍音が開きます。Harmonics・Reverb・Delayが0でも使えます。0でBloomなし。設計と検証は[Harmonic Bloom](docs/harmonic-bloom.md)。
+
+### AUTO PLAY
+
+ドローンを開始して **AUTO PLAY ON**。Pace（初期12秒）、Wander（大胆さの上昇速度）、Edge（キワキワ頻度）で漂流を調整できます。共通音の多い候補を中心に、停滞すると徐々に遠い響きへ移り、キワキワ後は通常の解決候補を探します。変更間隔は可変で、大きく動いた後ほど長く聴かせます。
+
+AUTO OFFは自動遷移だけを止め、現在のドローンを維持します。音声の停止・編集はAUTOもOFFにします。試聴中とタブ非表示中は自動遷移を待機し、手動採用・戻るでも文脈と待ち時間を更新します。採用したコードはAUTO欄に表示されます。[設計と検証](docs/autoplay.md)。

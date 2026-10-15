@@ -2,6 +2,7 @@ const { chromium } = await import(
   process.env.PLAYWRIGHT_MODULE || "playwright"
 );
 import assert from "node:assert/strict";
+import { parse, frequency } from "../music.js";
 import { mkdir, writeFile } from "node:fs/promises";
 const browser = await chromium.launch({
   headless: true,
@@ -124,13 +125,10 @@ for (const [name, width, height] of [
     await page.locator('[data-tab="tone"]').click();
   }
   await page.waitForTimeout(100);
-  const originalFrequencies = await page.evaluate(async () => {
-    const { parse, frequency } = await import("./music.js");
-    return document
-      .querySelector("#pitches")
-      .textContent.split(" / ")
-      .flatMap((n) => [frequency(parse(n)), frequency(parse(n))]);
-  });
+  // Read test helpers locally so this also verifies hash-versioned dist assets.
+  const originalFrequencies = (await page.locator('#pitches').textContent())
+    .split(' / ')
+    .flatMap(n => [frequency(parse(n)), frequency(parse(n))]);
   const baseline = await page.evaluate(() => ({
     oscs: audioProbe.oscs.length,
     stops: audioProbe.stops,

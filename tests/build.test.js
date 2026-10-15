@@ -8,7 +8,7 @@ import { execFileSync } from "node:child_process";
 test("deploy assets invalidate the whole module graph when UI changes", async () => {
   const root = await mkdtemp(join(tmpdir(), "fret-drift-build-"));
   try {
-    const files = ["build.js", "index.html", "style.css", "app.js", "hold.js",
+    const files = ["build.js", "index.html", "style.css", "app.js", "autoplay.js", "hold.js",
       "music.js", "audio.js", "harmony.js", "chords.js", "notes.js"];
     await Promise.all(files.map(file => cp(new URL(`../${file}`, import.meta.url), join(root, file))));
     await writeFile(join(root, "package.json"), '{"type":"module"}');
