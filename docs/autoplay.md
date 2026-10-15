@@ -93,3 +93,14 @@ physical Safari/iOS/Android devices remain unverified. The weights are musical
 heuristics; common-tone availability and sparse/extreme inputs can constrain the
 range of exploration. Four normal adoptions is a minimum cooldown, not a promise
 of a periodic edge event. State is session-only.
+
+## Native browser timer correction
+
+The initial browser checks used Playwright's substituted timers, masking a native
+Chrome `Illegal invocation`: storing `setTimeout` / `clearTimeout` directly on
+AutoClock caused them to receive the clock as `this`. AUTO activation failed
+halfway through, leaving enabled=true; subsequent manual acceptance failed at
+rescheduling before refreshing the chord and candidate display. Default timer
+adapters now call both functions on globalThis. Added a receiver-sensitive unit
+test and a browser phase with no fake clock that waits for an actual automatic
+transition, then verifies manual adoption, candidate rendering, OFF and Undo.

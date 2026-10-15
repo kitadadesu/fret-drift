@@ -117,8 +117,9 @@ export class AutoClock {
     ready,
     delay,
     changed = () => {},
-    set = setTimeout,
-    clear = clearTimeout,
+    // Browser timer functions must be called on their global receiver, not this clock.
+    set = (callback, delay) => globalThis.setTimeout(callback, delay),
+    clear = (id) => globalThis.clearTimeout(id),
   }) {
     Object.assign(this, { tick, ready, delay, changed, set, clear });
     this.enabled = false;
