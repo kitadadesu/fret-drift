@@ -138,3 +138,51 @@ npm 10.9.4 were used; the PR CI independently runs Node 22.
   intentional delay. Seven semitones is a hard upper bound, not a comfort guarantee.
 - Safari/iOS, Android hardware and acoustic listening were not tested. Existing
   audio synthesis architecture and envelope/effect limits remain unchanged.
+
+
+## Hold preview and three-chord resolution update (2026-10-15 JST)
+
+Base: main `3b009df` (PR #1 merged); all remote branches and recent PRs checked
+before creating `feature/resolution-hold-preview`. No repository AGENTS.md or
+contribution rules found. Existing README, theory notes, PR CI and main-only
+Pages workflow reviewed. No Fret Atlas files or refs touched. No dependency PRs.
+
+`acceptedModes` is aligned with the bounded 16-chord history. `resolutionAnchor`
+captures A and the inferred key immediately before actual edge adoption B.
+Repeated edge adoptions refresh A/key before each new B. Only the following
+normal proposal pool uses that context: reward removal of outside-key PCs,
+semitone destinations, lower chromatic/semitone/tritone tension, stable degrees,
+and affinity with A, alongside existing B→C common tones, exact retained notes,
+string motion, motif, novelty and maximum-leap bounds. Returning to A has a small
+penalty, rather than being mandatory. The existing weighted draw and quality
+floor still apply. Normal adoption clears the anchor; Undo snapshots restore it.
+An explicit key selection updates the anchor key. Rerolls and previews are pure
+with respect to accepted context. Ordinary normal/edge ranking is unchanged
+when there is no edge-adoption resolution context.
+
+Preview uses only synchronous `Drone.move`; no timers, `play`, context resume,
+node stop or new graph per preview. Pointer capture handles outside release;
+per-pointer/key ownership prevents an older gesture from releasing a newer one,
+including multiple fingers on one button. Blur, hidden page and all structural
+changes restore/clear the transient target. Stopped previews are disabled and
+labelled “再開して試聴”. Start/resume use a generation check so a pending resume
+cannot overwrite a later stop/edit. Muted voices fade over Release but retain
+oscillators until Stop; reversing a mute during release cancels the envelope,
+glides existing oscillators and uses Attack/Decay. At most 12 live oscillators
+per running drone; Stop retains its bounded release graph and restart clears
+retiring voices. Effects and safety limits remain unchanged.
+
+Validation: `npm test` 19 passed; `npm run build`; `git diff --check`.
+Browser script runs installed headless Chrome with real Web Audio, routes the
+final destination through zero gain, and checks the upstream signal. Desktop
+1440×1000 and mobile/touch emulation 390×844: hold/release outside the button,
+pointercancel/lost capture, Space/Enter, blur/visibilitychange, 150 rapid switches,
+return to stored chord frequencies, nonzero bounded signal after switching,
+zero signal after Stop, stopped disabled preview, resume, held adoption/Undo/
+edit/new start, edge→normal context and Undo restoration. Unit tests also run
+300 audio move/mute cycles without oscillator growth and 100 stale-release
+switches. Browser page errors: 0; horizontal overflow: none; sound controls remain
+inside both viewports. Screenshots inspected. This verifies browser synthesis
+and interaction, not human listening or aesthetic quality. Safari/iOS/Android
+hardware and acoustic A/B listening remain unverified. Tension is a relative
+heuristic and does not guarantee every offered chord feels resolved.
