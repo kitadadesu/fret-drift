@@ -2,7 +2,12 @@ import { frequency } from "./music.js";
 export const defaults = {
   glide: 2.5,
   harmonics: 0,
-  bloom: 0,
+  bloom: 0.7,
+  dryDrift: 0.15,
+  wetDrift: 0.35,
+  shimmer: 0.35,
+  shimmerDecay: 8,
+  diffusion: 0.6,
   inharmonicity: 0.12,
   drift: 0.4,
   detune: 7,
@@ -20,6 +25,11 @@ const limits = {
   glide: [0.02, 8],
   harmonics: [0, 1],
   bloom: [0, 1],
+  dryDrift: [0, 1],
+  wetDrift: [0, 1],
+  shimmer: [0, 1],
+  shimmerDecay: [1, 12],
+  diffusion: [0, 1],
   inharmonicity: [0, 1],
   drift: [0, 1],
   detune: [0, 30],
@@ -54,6 +64,8 @@ const oscillators = (v) => [...v.oscs, ...v.partials.map((p) => p.osc)];
 const disconnectVoice = (v) => {
   v.gain.disconnect();
   v.tone.disconnect();
+  v.spectralEnvelope.disconnect();
+  v.partials.forEach(p => p.send.disconnect());
   v.partials.forEach((p) => p.gain.disconnect());
 };
 // Bloom shares Drift's four sources; it needs neither timers nor more oscillators.
@@ -84,6 +96,32 @@ export function partialFrequencyAt(motion, time) {
     Math.max(0, Math.min(1, (time - motion.start) / (motion.end - motion.start)));
   return motion.from * (motion.to / motion.from) ** progress;
 }
+// Independent looping control signals: shallow wow/flutter plus smooth random
+// drift. Buffer sources run for the context lifetime, never on UI timers.
+function driftSignal(c, duration, wow, flutter) {
+  const rate = 8000, buffer = c.createBuffer(1, rate * duration, rate);
+  const data = buffer.getChannelData(0);
+  const knots = Array.from({ length: Math.ceil(duration / 7) + 1 }, () => Math.random() * 2 - 1);
+  knots[knots.length - 1] = knots[0];
+  for (let i = 0; i < data.length; i++) {
+    const t = i / rate, x = t / duration * (knots.length - 1), k = Math.floor(x);
+    const f = x - k, smooth = f * f * (3 - 2 * f);
+    // Integer cycles ensure a seamless loop, including the random component.
+    data[i] = 0.55 * Math.sin(2 * Math.PI * wow * t / duration) +
+      0.08 * Math.sin(2 * Math.PI * flutter * t / duration) +
+      0.37 * (knots[k] + (knots[k + 1] - knots[k]) * smooth);
+  }
+  const source = c.createBufferSource();
+  source.buffer = buffer;
+  source.loop = true;
+  source.start();
+  return source;
+}
+// Mirror the string ADSR on a separate high-partial-only envelope.
+function envelope(v, method, ...args) {
+  v.gain.gain[method](...args);
+  v.spectralEnvelope.gain[method](...args);
+}
 export class Drone {
   constructor() {
     this.settings = { ...defaults };
@@ -111,9 +149,10 @@ export class Drone {
       }
       this.conv.buffer = impulse;
       this.input.connect(this.dry).connect(this.master);
-      this.input.connect(this.conv).connect(this.wet).connect(this.master);
+      this.texture();
+      this.input.connect(this.conv).connect(this.wet).connect(this.wetInput);
       this.input.connect(this.delay);
-      this.delay.connect(this.echo).connect(this.master);
+      this.delay.connect(this.echo).connect(this.wetInput);
       const filter = c.createBiquadFilter();
       filter.frequency.value = 2400;
       this.delay.connect(filter).connect(this.feedback).connect(this.delay);
@@ -126,6 +165,64 @@ export class Drone {
       this.update(this.settings);
     }
     await this.ctx.resume();
+  }
+  texture() {
+    const c = this.ctx;
+    this.dryMod = c.createGain();
+    this.wetMod = c.createGain();
+    this.dryMod.gain.value = 0;
+    this.wetMod.gain.value = 0;
+    this.modulators = [driftSignal(c, 97, 17, 397), driftSignal(c, 109, 23, 503)];
+    this.modulators[0].connect(this.dryMod);
+    this.modulators[1].connect(this.wetMod);
+    this.wetInput = c.createGain();
+    this.wetBypass = c.createGain();
+    this.wetEffect = c.createGain();
+    this.wetEffect.gain.value = 0;
+    this.wetDelay = c.createDelay(0.03);
+    this.wetDelay.delayTime.value = 0.008;
+    this.wetMod.connect(this.wetDelay.delayTime);
+    this.wetInput.connect(this.wetBypass).connect(this.master);
+    this.wetInput.connect(this.wetDelay).connect(this.wetEffect).connect(this.master);
+    this.spectralInput = c.createGain();
+    const hp = c.createBiquadFilter(), lp = c.createBiquadFilter();
+    hp.type = "highpass"; hp.frequency.value = 650;
+    lp.type = "lowpass"; lp.frequency.value = 6200;
+    this.spectralInput.connect(hp).connect(lp);
+    // Short Schroeder allpasses smear onsets; each feedback is fixed below unity.
+    this.diffuseBypass = c.createGain();
+    this.diffuseWet = c.createGain();
+    this.diffuseWet.gain.value = 0;
+    const reverbInput = c.createGain();
+    lp.connect(this.diffuseBypass).connect(reverbInput);
+    let chain = lp;
+    for (const seconds of [0.017, 0.023, 0.031]) {
+      const delay = c.createDelay(0.04), direct = c.createGain();
+      const feedback = c.createGain(), out = c.createGain();
+      delay.delayTime.value = seconds;
+      direct.gain.value = -0.45; feedback.gain.value = 0.45;
+      chain.connect(delay).connect(out);
+      chain.connect(direct).connect(out);
+      out.connect(feedback).connect(delay);
+      chain = out;
+    }
+    chain.connect(this.diffuseWet).connect(reverbInput);
+    this.spectralWet = c.createGain();
+    this.spectralWet.gain.value = 0;
+    this.spectralWet.connect(this.wetInput);
+    // Four damped combs, with bounded RT60 feedback and a conservative return.
+    // No connection returns to the voice or ordinary reverb input.
+    this.tailLines = [0.211, 0.239, 0.269, 0.293].map(seconds => {
+      const delay = c.createDelay(0.4), damping = c.createBiquadFilter();
+      const feedback = c.createGain(), level = c.createGain();
+      delay.delayTime.value = seconds;
+      damping.type = "lowpass"; damping.frequency.value = 4200;
+      level.gain.value = 0.08;
+      feedback.gain.value = 0;
+      reverbInput.connect(delay).connect(damping).connect(level).connect(this.spectralWet);
+      damping.connect(feedback).connect(delay);
+      return { seconds, feedback };
+    });
   }
   update(s) {
     const previous = this.settings;
@@ -140,6 +237,15 @@ export class Drone {
     p(this.echo.gain, s2.delay);
     p(this.delay.delayTime, s2.time);
     p(this.feedback.gain, s2.feedback);
+    p(this.dryMod.gain, s2.dryDrift * 4); // maximum ±4 cents, additive to Detune
+    p(this.wetMod.gain, s2.wetDrift * 0.0006);
+    p(this.wetBypass.gain, s2.wetDrift === 0 ? 1 : 0);
+    p(this.wetEffect.gain, s2.wetDrift === 0 ? 0 : 1);
+    p(this.spectralWet.gain, s2.shimmer);
+    p(this.diffuseBypass.gain, 1 - s2.diffusion);
+    p(this.diffuseWet.gain, s2.diffusion);
+    this.tailLines.forEach(({ seconds, feedback }) =>
+      p(feedback.gain, Math.min(0.89, 10 ** (-3 * seconds / s2.shimmerDecay))));
     this.voices.forEach((v) => {
       if (!v) return;
       v.oscs.forEach((o, j) => p(o.detune, j ? s2.detune : -s2.detune));
@@ -174,8 +280,8 @@ export class Drone {
       if (n === null) {
         if (v && !v.muted) {
           v.muted = true;
-          v.gain.gain.cancelAndHoldAtTime(t);
-          v.gain.gain.linearRampToValueAtTime(0, t + s.release);
+          envelope(v, "cancelAndHoldAtTime", t);
+          envelope(v, "linearRampToValueAtTime", 0, t + s.release);
         }
         return;
       }
@@ -183,6 +289,9 @@ export class Drone {
         const gain = c.createGain();
         gain.gain.value = 0;
         gain.connect(this.input);
+        const spectralEnvelope = c.createGain();
+        spectralEnvelope.gain.value = 0;
+        spectralEnvelope.connect(this.spectralInput);
         const tone = c.createGain();
         tone.connect(gain);
         const oscs = [-s.detune, s.detune].map((d) => {
@@ -190,13 +299,14 @@ export class Drone {
           o.type = "sine";
           o.detune.value = d;
           o.frequency.value = frequency(n);
+          this.dryMod.connect(o.detune);
           o.connect(tone);
           o.start();
           return o;
         });
-        v = this.voices[i] = { gain, tone, oscs, partials: [], midi: n, bloomStart: t };
-        gain.gain.linearRampToValueAtTime(0.035, t + s.attack);
-        gain.gain.linearRampToValueAtTime(
+        v = this.voices[i] = { gain, spectralEnvelope, tone, oscs, partials: [], midi: n, bloomStart: t };
+        envelope(v, "linearRampToValueAtTime", 0.035, t + s.attack);
+        envelope(v, "linearRampToValueAtTime",
           0.035 * s.sustain,
           t + s.attack + s.decay,
         );
@@ -209,14 +319,14 @@ export class Drone {
           o.frequency.cancelAndHoldAtTime(t);
           o.frequency.exponentialRampToValueAtTime(frequency(n), t + s.glide);
         });
-        v.gain.gain.cancelAndHoldAtTime(t);
+        envelope(v, "cancelAndHoldAtTime", t);
         if (unmuting) {
-          v.gain.gain.linearRampToValueAtTime(0.035, t + s.attack);
-          v.gain.gain.linearRampToValueAtTime(
+          envelope(v, "linearRampToValueAtTime", 0.035, t + s.attack);
+          envelope(v, "linearRampToValueAtTime",
             0.035 * s.sustain,
             t + s.attack + s.decay,
           );
-        } else v.gain.gain.linearRampToValueAtTime(0.035 * s.sustain, t + 0.08);
+        } else envelope(v, "linearRampToValueAtTime", 0.035 * s.sustain, t + 0.08);
       }
       this.spectrum(v);
     });
@@ -226,14 +336,17 @@ export class Drone {
     const creating = (s.harmonics > 0 || s.bloom > 0) && !v.partials.length;
     if (creating) {
       v.partials = partials.map((_, i) => {
-        const osc = c.createOscillator(), gain = c.createGain();
+        const osc = c.createOscillator(), gain = c.createGain(), send = c.createGain();
+        send.gain.value = 0;
+        osc.connect(send).connect(v.spectralEnvelope);
+        this.dryMod.connect(osc.detune);
         osc.type = "sine";
         osc.frequency.value = partialTarget(v.midi, i, s.harmonics > 0 ? s : { ...s, inharmonicity: 0, drift: 0 }, c.sampleRate).frequency;
         gain.gain.value = 0;
         osc.connect(gain).connect(v.gain);
         osc.start();
         const hz = osc.frequency.value;
-        return { osc, gain, motion: { from: hz, to: hz, start: t, end: t } };
+        return { osc, gain, send, motion: { from: hz, to: hz, start: t, end: t } };
       });
     }
     const pitchSettings = s.harmonics > 0 ? s : { ...s, inharmonicity: 0, drift: 0 };
@@ -242,6 +355,7 @@ export class Drone {
     // interpolation between endpoints preserves that bound, including interrupts.
     const params = [v.tone.gain, ...v.partials.map(p => p.gain.gain)];
     params.forEach(p => p.cancelAndHoldAtTime(t));
+    v.partials.forEach(p => p.send.gain.cancelAndHoldAtTime(t));
     const end = Math.max(t + 0.08, v.bloomStart + 12);
     const times = [t + 0.08];
     if (s.bloom > 0) {
@@ -250,6 +364,12 @@ export class Drone {
     }
     for (const at of times) {
       const levels = spectrumLevels(targets, s, at - v.bloomStart);
+      v.partials.forEach((p, i) => {
+        // Only Bloom's 3rd/4th/6th partials, independent of Harmonics level.
+        const amount = i === 0 ? 0 : 2 * s.bloom * bloomWeights[i] *
+          bloomLevel(i, at - v.bloomStart) * levels.core * targets[i].weight / partials[i].weight;
+        p.send.gain.linearRampToValueAtTime(amount, at);
+      });
       [levels.core, ...levels.partials].forEach((value, i) =>
         params[i]?.linearRampToValueAtTime(value, at));
     }
@@ -275,6 +395,7 @@ export class Drone {
         } catch {}
         o.disconnect();
       });
+      oscillators(v).forEach(o => this.dryMod.disconnect(o.detune));
       disconnectVoice(v);
     }
     this.retiring.clear();
@@ -283,14 +404,15 @@ export class Drone {
     this.retiring.add(v);
     const t = this.ctx.currentTime,
       r = fast ? 0.025 : this.settings.release;
-    v.gain.gain.cancelAndHoldAtTime(t);
-    v.gain.gain.linearRampToValueAtTime(0, t + r);
+    envelope(v, "cancelAndHoldAtTime", t);
+    envelope(v, "linearRampToValueAtTime", 0, t + r);
     const sources = oscillators(v);
     let remaining = sources.length;
     sources.forEach((o) => {
       o.onended = () => {
         o.disconnect();
         if (--remaining === 0) {
+          oscillators(v).forEach(o => this.dryMod.disconnect(o.detune));
           disconnectVoice(v);
           this.retiring.delete(v);
         }
@@ -312,6 +434,7 @@ export class Drone {
   }
   async dispose() {
     this.stop();
+    this.modulators?.forEach(source => { source.stop(); source.disconnect(); });
     await this.ctx?.close();
     this.clearRetiring();
     this.ctx = null;

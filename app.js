@@ -372,6 +372,13 @@ const controls = {
     ["inharmonicity", "Inharmonicity", 0, 1, 0.01, ""],
     ["drift", "Spectral Drift", 0, 1, 0.01, ""],
   ],
+  dream: [
+    ["dryDrift", "Dry Drift", 0, 1, 0.01, ""],
+    ["wetDrift", "Wet Drift", 0, 1, 0.01, ""],
+    ["shimmer", "Spectral Shimmer", 0, 1, 0.01, ""],
+    ["shimmerDecay", "Shimmer Decay", 1, 12, 0.1, "s"],
+    ["diffusion", "Diffusion", 0, 1, 0.01, ""],
+  ],
   space: [
     ["reverb", "Reverb wet", 0, 1, 0.01, ""],
     ["delay", "Delay wet", 0, 0.7, 0.01, ""],
@@ -385,7 +392,10 @@ function renderControls() {
       const l = document.createElement("label");
       l.textContent = title;
       const out = document.createElement("output");
-      out.textContent = engine.settings[k] + unit;
+      const display = value => controls.dream.some(([key]) => key === k) && unit !== "s"
+        ? `${Math.round(value * 100)}%`
+        : (+value).toFixed(k === "detune" ? 0 : 2) + unit;
+      out.textContent = display(engine.settings[k]);
       const input = document.createElement("input");
       Object.assign(input, {
         type: "range",
@@ -397,6 +407,11 @@ function renderControls() {
       input.setAttribute("aria-label", title);
       input.title =
         {
+          dryDrift: "原音の微細なテープ揺らぎ。0で無効。",
+          wetDrift: "通常残響・ディレイ・倍音残響を独立して揺らす。0でバイパス。",
+          shimmer: "Bloomの高次倍音だけを長い残響へ。0で無効。",
+          shimmerDecay: "倍音残響の減衰時間。最小で短い余韻。",
+          diffusion: "倍音残響の拡散。0で拡散段をバイパス。",
           bloom:
             "澄んだ基音の背後から、約12秒かけて倍音が花開く。0でBloomなし。",
           harmonics:
@@ -408,7 +423,7 @@ function renderControls() {
         }[k] || title;
       input.oninput = () => {
         engine.update({ ...engine.settings, [k]: +input.value });
-        out.textContent = (+input.value).toFixed(k === "detune" ? 0 : 2) + unit;
+        out.textContent = display(+input.value);
       };
       l.append(out, input);
       return l;
