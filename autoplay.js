@@ -1,7 +1,135 @@
-import { candidatePool, comparison, soundKey } from "./harmony.js";
+import {
+  candidatePool,
+  comparison,
+  soundKey,
+  centerKey,
+  keyId,
+  scaleOf,
+  inferKeys,
+} from "./harmony.js";
 
 const clamp = (n, lo = 0, hi = 1) => Math.max(lo, Math.min(hi, n));
 export const initialDrift = () => ({ wander: 0, cooldown: 0 });
+export const initialMigration = () => ({
+  target: null,
+  elapsed: 0,
+  stable: 0,
+  visits: 0,
+  recent: [],
+  arrived: false,
+});
+export function migrationTarget(context, recent = [], rng = Math.random) {
+  const current = centerKey(context);
+  const others = context.keys.filter(
+    (k) => keyId(k) !== context.center && !recent.includes(keyId(k)),
+  );
+  if (!others.length) return null;
+  const close = others.filter(
+    (k) =>
+      k.support >= current.support * 0.35 &&
+      Math.abs(k.score - current.score) <= 2.5,
+  );
+  const candidates = close.length
+    ? close
+    : others
+        .filter(
+          (k) =>
+            scaleOf(k).filter((pc) => scaleOf(current).includes(pc)).length >=
+            4,
+        )
+        .slice(0, 6);
+  return weightedChoice(
+    candidates,
+    candidates.map((k) => k.score - (k.tonic === current.tonic ? 1 : 0)),
+    rng,
+  );
+}
+export function beginMigration(state, context, rng = Math.random) {
+  if (state.target) return state;
+  const target = migrationTarget(context, state.recent, rng);
+  return {
+    ...state,
+    target,
+    from: context.center,
+    elapsed: 0,
+    stable: 0,
+    visits: 0,
+    arrived: false,
+  };
+}
+export function migrationBias(candidate, current, state) {
+  if (!state?.target) return 0;
+  const k = state.target,
+    scale = scaleOf(k);
+  const notes = candidate.voicing.filter((n) => n !== null);
+  if (!notes.length) return 0;
+  const pcs = [...new Set(notes.map((n) => n % 12))];
+  const inside = pcs.filter((pc) => scale.includes(pc)).length / pcs.length;
+  const tonicBass = Math.min(...notes) % 12 === k.tonic;
+  const third = (k.tonic + (k.mode === "minor" ? 3 : 4)) % 12;
+  const triad =
+    pcs.includes(k.tonic) &&
+    pcs.includes(third) &&
+    pcs.includes((k.tonic + 7) % 12);
+  const bass = Math.min(...current.filter((n) => n !== null)) % 12;
+  const resolution = tonicBass && bass === (k.tonic + 7) % 12;
+  return (
+    Math.min(1, state.elapsed / 120000) *
+    (inside * 1.5 +
+      Number(triad) * 1.5 +
+      Number(tonicBass) * (2.5 + 4 * Math.min(1, state.elapsed / 120000)) +
+      Number(resolution) * 0.5)
+  );
+}
+// Arrival needs repeated tonic harmony, bass, evidence across history and dwell.
+// A relative major/minor shares its scale, so scale membership alone cannot arrive.
+export function advanceMigration(state, context, current, previous, elapsed) {
+  if (!state.target) return state;
+  const k = state.target,
+    notes = current.filter((n) => n !== null),
+    pc = notes.map((n) => n % 12);
+  const third = (k.tonic + (k.mode === "minor" ? 3 : 4)) % 12;
+  const tonic =
+    notes.length &&
+    Math.min(...notes) % 12 === k.tonic &&
+    pc.includes(third) &&
+    pc.includes((k.tonic + 7) % 12);
+  const evidence = inferKeys(context.accepted.slice(-8));
+  const support = evidence.find((x) => keyId(x) === keyId(k))?.support ?? 0;
+  const supported = support >= (evidence[0]?.support ?? 1) * 0.6;
+  const prior = previous.filter((n) => n !== null);
+  const priorTonic =
+    prior.length &&
+    Math.min(...prior) % 12 === k.tonic &&
+    prior.some((n) => n % 12 === third) &&
+    prior.some((n) => n % 12 === (k.tonic + 7) % 12);
+  const related = pc.every((n) => scaleOf(k).includes(n));
+  const stable =
+    supported && priorTonic
+      ? state.stable + elapsed
+      : related
+        ? Math.max(0, state.stable - elapsed * 0.2)
+        : 0;
+  const visits = state.visits + Number(tonic && supported);
+  const total = state.elapsed + elapsed;
+  const arrived = Boolean(
+    tonic && supported && total >= 120000 && stable >= 18000 && visits >= 2,
+  );
+  // If the available voicings never establish a center, abandon without relabeling.
+  if (total > 300000 && !arrived)
+    return {
+      ...initialMigration(),
+      recent: [...state.recent, keyId(k)].slice(-3),
+    };
+  return {
+    ...state,
+    elapsed: total,
+    stable,
+    visits,
+    arrived,
+    recent: arrived ? [...state.recent, state.from].slice(-3) : state.recent,
+  };
+}
 export function movement(a, b) {
   const cmp = comparison(a, b);
   const voices = a.filter((n) => n !== null).length;
@@ -25,6 +153,7 @@ export function advanceDrift(
 ) {
   const { distance } = movement(a, b);
   return {
+    migration: state.migration,
     wander:
       mode === "edge" || distance >= 0.45
         ? state.wander * 0.25
@@ -87,12 +216,30 @@ export function chooseNext(
     candidates = pool(current, context, false);
   }
   if (!candidates.length) return null;
+  if (
+    settings.migration &&
+    state.migration?.target &&
+    mode === "normal" &&
+    !resolving
+  ) {
+    const targetContext = { ...context, center: keyId(state.migration.target) };
+    const additions = pool(current, targetContext, false);
+    const seen = new Set(candidates.map((c) => soundKey(c.voicing)));
+    candidates = [
+      ...candidates,
+      ...additions.filter((c) => !seen.has(soundKey(c.voicing))),
+    ];
+  }
   // Keep the existing voice-leading grammar and reject the weakest musical candidates.
   const best = Math.max(...candidates.map((c) => c.score));
   candidates = candidates.filter((c) => c.score >= best - 12);
   const candidate = weightedChoice(
     candidates,
-    candidates.map((c) => autoScore(c, current, context, state)),
+    candidates.map(
+      (c) =>
+        autoScore(c, current, context, state) +
+        (settings.migration ? migrationBias(c, current, state.migration) : 0),
+    ),
     rng,
   );
   return { candidate, mode };
@@ -126,8 +273,17 @@ export class AutoClock {
     this.generation = 0;
     this.timer = null;
     this.paused = false;
+    this.elapsed = 0;
+    this.since = null;
+  }
+  resetElapsed() {
+    this.elapsed = 0;
+    this.since = this.timer === null ? null : performance.now();
   }
   cancel() {
+    if (this.since !== null)
+      this.elapsed += Math.max(0, performance.now() - this.since);
+    this.since = null;
     this.generation++;
     if (this.timer !== null) this.clear(this.timer);
     this.timer = null;
@@ -135,6 +291,7 @@ export class AutoClock {
   stop() {
     this.enabled = false;
     this.cancel();
+    this.resetElapsed();
     this.changed();
   }
   start() {
@@ -146,6 +303,7 @@ export class AutoClock {
     this.cancel();
     if (this.enabled && !this.paused && this.ready()) {
       const id = this.generation;
+      this.since = performance.now();
       this.timer = this.set(() => {
         if (
           id !== this.generation ||
@@ -156,8 +314,13 @@ export class AutoClock {
           return;
         this.timer = null;
         try {
-          this.tick();
-        } catch {
+          const elapsed =
+            this.elapsed + Math.max(0, performance.now() - this.since);
+          this.since = null;
+          this.elapsed = 0;
+          this.tick(elapsed);
+        } catch (error) {
+          console.error("AUTO PLAY stopped after transition failure", error);
           this.stop();
           return;
         }

@@ -58,6 +58,7 @@ class Context {
     this.oscs = [];
     this.resumes = [];
   }
+  createWaveShaper() { return new Node(); }
   createGain() {
     return new Node();
   }
@@ -370,4 +371,27 @@ test("Dream independent modulation routes and settings bounds", async () => {
   assert.deepEqual(d.voices[0].oscs.map(o=>o.detune.value),[-13,13]);
   assert.equal(d.dryMod.gain.value,4);
   await d.dispose();
+});
+
+test('saturation boundary bypass, fixed morph nodes, passive feedback and disposal', async () => {
+  const d = new Drone(); await d.play([40,45,50,55,59,64]);
+  const voices = [...d.voices], context = d.ctx;
+  const stages = [d.preSaturation, d.postSaturation];
+  const curves = stages.flatMap(s => s.colors.map(c => c.shape.curve));
+  for(let i=0;i<240;i++) {
+    d.update({...d.settings, drive:i%3?1:0, saturationMix:i%4?1:0,
+      character:i/239, saturationPost:i%2, shimmerDecay:12});
+    if(d.settings.drive===0 || d.settings.saturationMix===0) stages.forEach(s => {
+      assert.equal(s.dry.gain.value,1); assert.equal(s.wet.gain.value,0);
+    });
+    d.tailLines.forEach(line => {
+      assert.equal(line.damping.Q.value,-3.0103); assert.equal(line.highpass.Q.value,-3.0103);
+      assert.ok(line.feedback.gain.value<0.94);
+      assert.ok(Math.abs(line.feedback.gain.value-10**(-3*line.seconds/12))<1e-12);
+    });
+  }
+  assert.deepEqual(d.voices,voices); assert.equal(d.ctx,context);
+  assert.deepEqual(stages.flatMap(s=>s.colors.map(c=>c.shape.curve)),curves);
+  stages.forEach(s=>s.colors.forEach(c=>assert.equal(c.shape.oversample,'4x')));
+  await d.dispose(); stages.forEach(s=>s.nodes.forEach(n=>assert.ok(n.disconnected)));
 });

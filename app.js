@@ -14,6 +14,9 @@ import {
 import { bindHold } from "./hold.js";
 import {
   AutoClock,
+  initialMigration,
+  beginMigration,
+  advanceMigration,
   initialDrift,
   advanceDrift,
   chooseNext,
@@ -38,7 +41,7 @@ let current = [],
   runGeneration = 0;
 
 let drift = initialDrift();
-const autoSettings = { pace: 12, wander: 0.5, edge: 0.25 };
+const autoSettings = { pace: 12, wander: 0.5, edge: 0.25, migration: true };
 let lastMode = "normal",
   lastAdoption = "まだ採用なし";
 const auto = new AutoClock({
@@ -51,14 +54,19 @@ const auto = new AutoClock({
     !$("instrument").hidden,
   delay: () => intervalMs(previous, current, lastMode, autoSettings.pace),
   changed: autoDisplay,
-  tick: () => {
-    const next = chooseNext(current, context, drift, autoSettings);
+  tick: (elapsed) => {
+    if (autoSettings.migration) {
+      drift.migration = beginMigration(drift.migration || initialMigration(), context);
+    }
+    const scoring = drift.migration ? { ...drift, migration: { ...drift.migration,
+      elapsed: drift.migration.elapsed + elapsed } } : drift;
+    const next = chooseNext(current, context, scoring, autoSettings);
     if (!next) {
       auto.stop();
       return;
     }
     const { candidate, mode: nextMode } = next;
-    commit(candidate.voicing, candidate.name, nextMode, "AUTO");
+    commit(candidate.voicing, candidate.name, nextMode, "AUTO", elapsed);
     // Edge is a single event; the next pool uses the accepted resolution anchor.
     edge = false;
     $("normal").setAttribute("aria-pressed", true);
@@ -67,7 +75,21 @@ const auto = new AutoClock({
     proposals();
   },
 });
+function resetMigration() {
+  drift.migration = initialMigration();
+  auto.resetElapsed();
+}
+$("migration").onclick = () => {
+  autoSettings.migration = !autoSettings.migration;
+  resetMigration();
+  autoDisplay();
+};
 function autoDisplay() {
+  $("migration").setAttribute("aria-pressed", autoSettings.migration);
+  $("migration").textContent = `Migration ${autoSettings.migration ? "ON" : "OFF"}`;
+  const m = drift.migration;
+  $("migration-status").textContent = !autoSettings.migration ? "転調なし" : m?.target
+    ? `${m.lastArrival ? keyLabel(m.lastArrival) + " 到着 · " : ""}→ ${keyLabel(m.target)} · ${Math.min(100, Math.round(m.elapsed / 1200))}%${m.elapsed >= 120000 ? " · 主音の定着を待機" : ""}` : m?.lastArrival ? `${keyLabel(m.lastArrival)} 到着 · 次の調を探索` : "近い支持の調へ、約2分かけて移動";
   $("auto").setAttribute("aria-pressed", auto.enabled);
   $("auto").textContent = `AUTO PLAY ${auto.enabled ? "ON" : "OFF"}`;
   $("autostatus").textContent =
@@ -159,6 +181,7 @@ $("interpretation").onchange = (e) => {
   cancelPreview();
   if (active) engine.move(current);
   context = selectKey(context, e.target.value);
+  resetMigration();
   seen = [];
   seed = freshSeed();
   proposals();
@@ -256,7 +279,7 @@ function preview(i) {
   engine.move(choices[i]);
   $("status").textContent = `◉ 候補 ${i + 1} を試聴中（離すと戻る）`;
 }
-function commit(v, name, adoptedMode, source) {
+function commit(v, name, adoptedMode, source, elapsed = 0) {
   cancelPreview();
   history.push({
     voicing: [...current],
@@ -264,7 +287,7 @@ function commit(v, name, adoptedMode, source) {
     context: structuredClone(context),
     seen: [...seen],
     seed,
-    drift: { ...drift },
+    drift: structuredClone(drift),
     lastMode,
     lastAdoption,
   });
@@ -282,6 +305,14 @@ function commit(v, name, adoptedMode, source) {
   lastMode = adoptedMode;
   lastAdoption = `${source} → ${name}（${adoptedMode === "edge" ? "キワキワ" : "通常"}）`;
   context = accept(context, current, adoptedMode);
+  if (source === "AUTO" && autoSettings.migration && drift.migration?.target) {
+    drift.migration = advanceMigration(drift.migration, context, current, previous, elapsed);
+    if (drift.migration.arrived) {
+      context = { ...context, center: keyId(drift.migration.target) };
+      const recent = drift.migration.recent;
+      drift.migration = { ...initialMigration(), recent, lastArrival: drift.migration.target };
+    }
+  } else resetMigration();
   seen = [];
   seed++;
   if (active) engine.move(current);
@@ -324,6 +355,7 @@ $("back").onclick = () => {
   seen = saved.seen;
   seed = saved.seed;
   drift = saved.drift;
+  auto.resetElapsed();
   lastMode = saved.lastMode;
   lastAdoption = saved.lastAdoption;
   auto.replan();
@@ -337,6 +369,7 @@ $("edit").onclick = () => {
   $("instrument").hidden = true;
 };
 function mode(e) {
+  resetMigration();
   edge = e;
   seed = freshSeed();
   seen = [];
@@ -379,6 +412,11 @@ const controls = {
     ["shimmerDecay", "Shimmer Decay", 1, 12, 0.1, "s"],
     ["diffusion", "Diffusion", 0, 1, 0.01, ""],
   ],
+  saturation: [
+    ["drive", "Drive", 0, 1, 0.01, ""],
+    ["character", "Character", 0, 1, 0.01, ""],
+    ["saturationMix", "Mix", 0, 1, 0.01, ""],
+  ],
   space: [
     ["reverb", "Reverb wet", 0, 1, 0.01, ""],
     ["delay", "Delay wet", 0, 0.7, 0.01, ""],
@@ -392,7 +430,7 @@ function renderControls() {
       const l = document.createElement("label");
       l.textContent = title;
       const out = document.createElement("output");
-      const display = value => controls.dream.some(([key]) => key === k) && unit !== "s"
+      const display = value => [...controls.dream, ...controls.saturation].some(([key]) => key === k) && unit !== "s"
         ? `${Math.round(value * 100)}%`
         : (+value).toFixed(k === "detune" ? 0 : 2) + unit;
       out.textContent = display(engine.settings[k]);
@@ -429,6 +467,17 @@ function renderControls() {
       return l;
     }),
   );
+  if (tab === "saturation") {
+    const label = document.createElement("label"), select = document.createElement("select");
+    label.textContent = "Position";
+    select.setAttribute("aria-label", "Saturation Position");
+    ["PRE · 倍音 → 歪み → 残響", "POST · 倍音 → 残響 → 歪み"].forEach((text, i) => {
+      const option = document.createElement("option"); option.value = i; option.textContent = text; select.append(option);
+    });
+    select.value = engine.settings.saturationPost;
+    select.onchange = () => engine.update({ ...engine.settings, saturationPost: +select.value });
+    label.append(select); $("controls").append(label);
+  }
 }
 document.querySelectorAll("[data-tab]").forEach(
   (b) =>
