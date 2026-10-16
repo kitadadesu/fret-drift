@@ -10,3 +10,5 @@
 [data-preview]:active{background:#426658}
 
 #instrument{grid-template-rows:auto auto minmax(55px,1fr) auto auto auto}.autoplay{display:grid;grid-template-columns:auto repeat(3,minmax(0,1fr));gap:6px 14px;align-items:center;margin-top:8px}.autoplay label{font-size:10px;color:var(--dim)}.autoplay button{font-size:11px;min-height:36px}.autoplay small{grid-column:1/-1;margin:0;letter-spacing:0;overflow-wrap:anywhere}@media(max-width:700px){.autoplay{gap:4px 8px}.autoplay button{font-size:9px;padding:6px}main{min-height:830px}.candidate button{min-height:32px}}
+
+.tabs{flex-wrap:wrap}

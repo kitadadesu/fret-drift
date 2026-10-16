@@ -33,10 +33,12 @@ class Node {
       "threshold",
       "ratio",
       "delayTime",
+      "Q",
     ])
       this[k] = new Param();
   }
   connect(n) {
+    (this.connections ||= []).push(n);
     return n;
   }
   disconnect() {
@@ -77,6 +79,7 @@ class Context {
   createBuffer(ch, len) {
     return { getChannelData: () => new Float32Array(len) };
   }
+  createBufferSource() { return new Node(); }
   createOscillator() {
     const n = new Node();
     this.oscs.push(n);
@@ -90,6 +93,7 @@ class Context {
 globalThis.AudioContext = Context;
 test("continuous string voices, unisons, mute retirement and disposal", async () => {
   const d = new Drone();
+  d.update({...d.settings,bloom:0});
   await d.play([50, 50, null, 55, 59, 64]);
   const first = d.voices[0];
   assert.notEqual(first, d.voices[1]);
@@ -114,6 +118,7 @@ test("continuous string voices, unisons, mute retirement and disposal", async ()
 });
 test("rapid audition and mute changes reuse voices without stop/start", async () => {
   const d = new Drone();
+  d.update({...d.settings,bloom:0});
   await d.play([40, 45, 50, 55, 59, 64]);
   const voices = [...d.voices];
   for (let i = 0; i < 300; i++) {
@@ -128,6 +133,7 @@ test("rapid audition and mute changes reuse voices without stop/start", async ()
 });
 test("six independent spectra follow MIDI with separate in-flight glides", async () => {
   const d = new Drone();
+  d.update({...d.settings,bloom:0});
   d.update({ ...d.settings, harmonics: 0.8, inharmonicity: 0.6, drift: 1, glide: 2 });
   await d.play([40, 40, 50, 55, 59, 64]);
   assert.equal(d.ctx.oscs.length, 36);
@@ -170,6 +176,7 @@ test("interrupted partial motion starts from its geometric in-flight pitch", () 
 });
 test("zero controls, Nyquist ceiling and absolute amplitude budget", async () => {
   const d = new Drone();
+  d.update({...d.settings,bloom:0});
   await d.play([28, 45, 70, 100, 120, 127]);
   assert.equal(d.ctx.oscs.length, 12); // legacy path needs no partials
   for (const harmonics of [0.01, 0.4, 1, 0]) {
@@ -194,6 +201,7 @@ test("zero controls, Nyquist ceiling and absolute amplitude budget", async () =>
 });
 test("spectral rapid holds, all-muted recovery, stop and resume stay bounded", async () => {
   const d = new Drone();
+  d.update({...d.settings,bloom:0});
   d.update({ ...d.settings, harmonics: 1 });
   await d.play([40, 45, 50, 55, 59, 64]);
   const voices = [...d.voices];
@@ -221,6 +229,7 @@ test("resume and dispose disconnect delayed retiring partials before onended", a
   Node.prototype.stop = function () { this.stopped = true; };
   try {
     const d = new Drone();
+    d.update({...d.settings,bloom:0});
     d.update({ ...d.settings, harmonics: 1 });
     await d.play([40,45,50,55,59,64]);
     const old = [...d.voices];
@@ -237,6 +246,7 @@ test("resume and dispose disconnect delayed retiring partials before onended", a
 });
 test("stop cancels a pending AudioContext resume", async () => {
   const d = new Drone();
+  d.update({...d.settings,bloom:0});
   let release;
   Context.prototype.resume = function () {
     return new Promise((r) => (release = r));
@@ -304,5 +314,60 @@ test("Bloom shares sources, restarts only on pitch/unmute and survives live cont
   await d.play([40,40,50,55,59,64]);
   d.update({...d.settings,bloom:1});
   assert.equal(d.voices[0].partials.length,4);
+  await d.dispose();
+});
+
+test("Dream sends contain only Bloom high partials, mirror mute ADSR, and preserve glides", async () => {
+  const d = new Drone();
+  await d.play([40,45,50,55,59,64]);
+  const voices = [...d.voices], sources = d.ctx.oscs.length;
+  const motion = voices[0].partials[1].motion;
+  assert.equal(defaults.bloom, 0.7);
+  for (let i=0; i<200; i++) {
+    d.ctx.currentTime += 0.1;
+    d.update({...d.settings,dryDrift:i%2,wetDrift:(i%3)/2,shimmer:i%2,
+      diffusion:i%2,shimmerDecay:i%2?1:12});
+    assert.equal(voices[0].partials[1].motion, motion);
+  }
+  assert.deepEqual(d.voices, voices);
+  assert.equal(d.ctx.oscs.length, sources);
+  assert.equal(voices[0].partials[0].send.gain.value, 0);
+  assert.ok(voices[0].partials[1].send.gain.value > 0);
+  d.move(Array(6).fill(null));
+  for (const v of voices) assert.equal(v.spectralEnvelope.gain.value, v.gain.gain.value);
+  d.move([40,45,50,55,59,64]);
+  d.update({...d.settings,bloom:0,harmonics:1,dryDrift:0,wetDrift:0,shimmer:0,diffusion:0});
+  assert.ok(voices.every(v=>v.partials.every(p=>p.send.gain.value===0)));
+  assert.equal(d.dryMod.gain.value,0);
+  assert.equal(d.wetMod.gain.value,0);
+  assert.equal(d.wetBypass.gain.value,1);
+  assert.equal(d.wetEffect.gain.value,0);
+  assert.equal(d.spectralWet.gain.value,0);
+  assert.equal(d.diffuseWet.gain.value,0);
+  assert.ok(d.tailLines.every(l=>l.feedback.gain.value<0.89+1e-12));
+  const mods=d.modulators;
+  await d.dispose();
+  assert.ok(mods.every(m=>m.stopped&&m.disconnected));
+});
+
+
+test("Dream independent modulation routes and settings bounds", async () => {
+  const settings = sanitize({...defaults, bloom:0, dryDrift:9, wetDrift:-1, shimmerDecay:99, diffusion:NaN});
+  assert.equal(settings.bloom,0);
+  assert.equal(settings.dryDrift,1);
+  assert.equal(settings.wetDrift,0);
+  assert.equal(settings.shimmerDecay,12);
+  assert.equal(settings.diffusion,defaults.diffusion);
+  const d = new Drone();
+  await d.play([40,45,50,55,59,64]);
+  assert.notEqual(d.modulators[0],d.modulators[1]);
+  assert.deepEqual(d.modulators[0].connections,[d.dryMod]);
+  assert.deepEqual(d.modulators[1].connections,[d.wetMod]);
+  assert.ok(d.dryMod.connections.includes(d.voices[0].oscs[0].detune));
+  assert.ok(d.dryMod.connections.includes(d.voices[0].partials[2].osc.detune));
+  assert.deepEqual(d.wetMod.connections,[d.wetDelay.delayTime]);
+  d.update({...d.settings,detune:13,dryDrift:1});
+  assert.deepEqual(d.voices[0].oscs.map(o=>o.detune.value),[-13,13]);
+  assert.equal(d.dryMod.gain.value,4);
   await d.dispose();
 });

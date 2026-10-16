@@ -80,7 +80,7 @@ try {
     try {
       const render = async (harmonics) => {
         const d = new Drone();
-        d.update({...d.settings, harmonics, inharmonicity:0, drift:0, detune:0,
+        d.update({...d.settings, harmonics, bloom:0, dryDrift:0, wetDrift:0, shimmer:0, inharmonicity:0, drift:0, detune:0,
           reverb:0, delay:0, attack:0.01, decay:0.01, sustain:1});
         await d.play([69,null,null,null,null,null]);
         const buffer = await d.ctx.startRendering();

@@ -14,7 +14,7 @@ try {
     };
     const render=async(bloom,changes=false)=>{
       const d=new Drone();
-      d.update({...d.settings,bloom,detune:0,inharmonicity:0,drift:0,reverb:0,delay:0,attack:0.01,decay:0.01,sustain:1});
+      d.update({...d.settings,bloom,dryDrift:0,wetDrift:0,shimmer:0,detune:0,inharmonicity:0,drift:0,reverb:0,delay:0,attack:0.01,decay:0.01,sustain:1});
       await d.play([69,null,null,null,null,null]);
       if(changes) {
         for(const [at,amount] of [[2,0],[3,1],[5,0.4],[6,1]]) {
