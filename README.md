@@ -47,3 +47,9 @@ Partial amplitudes and the dry fundamental mix share a constant absolute amplitu
 ドローンを開始して **AUTO PLAY ON**。Pace（初期12秒）、Wander（大胆さの上昇速度）、Edge（キワキワ頻度）で漂流を調整できます。共通音の多い候補を中心に、停滞すると徐々に遠い響きへ移り、キワキワ後は通常の解決候補を探します。変更間隔は可変で、大きく動いた後ほど長く聴かせます。
 
 AUTO OFFは自動遷移だけを止め、現在のドローンを維持します。音声の停止・編集はAUTOもOFFにします。試聴中とタブ非表示中は自動遷移を待機し、手動採用・戻るでも文脈と待ち時間を更新します。採用したコードはAUTO欄に表示されます。[設計と検証](docs/autoplay.md)。
+
+### Spectral Saturation / Tonal Migration
+
+SaturationタブのDrive 25%・Character 15%・Mix 40%を標準に、Bloom高次成分だけを柔らかく飽和させます。Characterで非対称→wavefoldへ連続変化。PRE/POSTは残響の前後を滑らかに切り替え、MixまたはDrive 0でバイパスします。Shimmerはループ内の共振を抑え、最大Decayでも減衰する設計に修正しました。
+
+AUTOのMigrationは初期ON。支持の近い別調へ約2分を目安に漂い、低音・主和音の反復・持続した支持が揃うまで到着を待ちます。目標と進行はAUTO欄に表示。OFFで従来のAUTOのみ。手動採用やキー／モード変更で計画をリセットし、Undoは履歴を復元します。[設計・検証手順](docs/spectral-migration.md)。

@@ -1,4 +1,6 @@
 import { frequency } from "./music.js";
+// LP/HP WebAudio Q is in dB: -3.0103 dB is the nonresonant Butterworth value (Q=1/√2).
+export const dampedQ = -3.0103;
 export const defaults = {
   glide: 2.5,
   harmonics: 0,
@@ -8,6 +10,10 @@ export const defaults = {
   shimmer: 0.35,
   shimmerDecay: 8,
   diffusion: 0.6,
+  drive: 0.25,
+  character: 0.15,
+  saturationMix: 0.4,
+  saturationPost: 0,
   inharmonicity: 0.12,
   drift: 0.4,
   detune: 7,
@@ -30,6 +36,10 @@ const limits = {
   shimmer: [0, 1],
   shimmerDecay: [1, 12],
   diffusion: [0, 1],
+  drive: [0, 1],
+  character: [0, 1],
+  saturationMix: [0, 1],
+  saturationPost: [0, 1],
   inharmonicity: [0, 1],
   drift: [0, 1],
   detune: [0, 30],
@@ -122,6 +132,38 @@ function envelope(v, method, ...args) {
   v.gain.gain[method](...args);
   v.spectralEnvelope.gain[method](...args);
 }
+// Fixed curves: Character morphs gains, never replaces a live WaveShaper curve.
+export function saturationCurve(kind, size = 8193) {
+  return Float32Array.from({ length: size }, (_, i) => {
+    const x = i * 2 / (size - 1) - 1;
+    if (kind === 0) return Math.tanh(x * 2) / 2;
+    if (kind === 1) return (Math.tanh(x * 2 + 0.35) - Math.tanh(0.35)) / 2.3;
+    return Math.sin(x * 5) / 4;
+  });
+}
+export function characterWeights(x) {
+  const asymmetric = Math.max(0, Math.min(1, (x - 0.3) / 0.4));
+  const fold = Math.max(0, Math.min(1, (x - 0.7) / 0.3));
+  return [1 - asymmetric, asymmetric * (1 - fold), fold];
+}
+function saturation(c) {
+  const input = c.createGain(), output = c.createGain(), dry = c.createGain();
+  const drive = c.createGain(), wet = c.createGain();
+  wet.gain.value = 0;
+  input.connect(dry).connect(output);
+  input.connect(drive);
+  const colors = [0, 1, 2].map(kind => {
+    const shape = c.createWaveShaper(), gain = c.createGain();
+    shape.curve = saturationCurve(kind); shape.oversample = "4x";
+    drive.connect(shape).connect(gain).connect(wet);
+    return { shape, gain };
+  });
+  const hp = c.createBiquadFilter(), lp = c.createBiquadFilter();
+  hp.type = "highpass"; hp.frequency.value = 30; hp.Q.value = dampedQ;
+  lp.type = "lowpass"; lp.frequency.value = 6500; lp.Q.value = dampedQ;
+  wet.connect(hp).connect(lp).connect(output);
+  return { input, output, dry, drive, wet, colors, nodes: [input, output, dry, drive, wet, hp, lp, ...colors.flatMap(x => [x.shape, x.gain])] };
+}
 export class Drone {
   constructor() {
     this.settings = { ...defaults };
@@ -188,40 +230,48 @@ export class Drone {
     const hp = c.createBiquadFilter(), lp = c.createBiquadFilter();
     hp.type = "highpass"; hp.frequency.value = 650;
     lp.type = "lowpass"; lp.frequency.value = 6200;
-    this.spectralInput.connect(hp).connect(lp);
+    hp.Q.value = lp.Q.value = dampedQ;
+    this.preSaturation = saturation(c);
+    this.postSaturation = saturation(c);
+    this.spectralInput.connect(hp).connect(lp).connect(this.preSaturation.input);
     // Short Schroeder allpasses smear onsets; each feedback is fixed below unity.
     this.diffuseBypass = c.createGain();
     this.diffuseWet = c.createGain();
     this.diffuseWet.gain.value = 0;
     const reverbInput = c.createGain();
-    lp.connect(this.diffuseBypass).connect(reverbInput);
-    let chain = lp;
+    this.preSaturation.output.connect(this.diffuseBypass).connect(reverbInput);
+    let chain = this.preSaturation.output;
     for (const seconds of [0.017, 0.023, 0.031]) {
       const delay = c.createDelay(0.04), direct = c.createGain();
       const feedback = c.createGain(), out = c.createGain();
       delay.delayTime.value = seconds;
       direct.gain.value = -0.45; feedback.gain.value = 0.45;
-      chain.connect(delay).connect(out);
+      const delayed = c.createGain();
+      delayed.gain.value = 1 - 0.45 ** 2;
+      chain.connect(delay).connect(delayed).connect(out);
       chain.connect(direct).connect(out);
-      out.connect(feedback).connect(delay);
+      delay.connect(feedback).connect(delay);
       chain = out;
     }
     chain.connect(this.diffuseWet).connect(reverbInput);
     this.spectralWet = c.createGain();
     this.spectralWet.gain.value = 0;
-    this.spectralWet.connect(this.wetInput);
+    this.spectralWet.connect(this.postSaturation.input);
+    this.postSaturation.output.connect(this.wetInput);
     // Four damped combs, with bounded RT60 feedback and a conservative return.
     // No connection returns to the voice or ordinary reverb input.
     this.tailLines = [0.211, 0.239, 0.269, 0.293].map(seconds => {
-      const delay = c.createDelay(0.4), damping = c.createBiquadFilter();
+      const delay = c.createDelay(0.4), damping = c.createBiquadFilter(), highpass = c.createBiquadFilter();
       const feedback = c.createGain(), level = c.createGain();
       delay.delayTime.value = seconds;
       damping.type = "lowpass"; damping.frequency.value = 4200;
+      damping.Q.value = dampedQ; // monotone response: magnitude never exceeds unity
+      highpass.type = "highpass"; highpass.frequency.value = 180; highpass.Q.value = dampedQ;
       level.gain.value = 0.08;
       feedback.gain.value = 0;
       reverbInput.connect(delay).connect(damping).connect(level).connect(this.spectralWet);
-      damping.connect(feedback).connect(delay);
-      return { seconds, feedback };
+      damping.connect(highpass).connect(feedback).connect(delay);
+      return { seconds, feedback, damping, highpass, level };
     });
   }
   update(s) {
@@ -244,8 +294,18 @@ export class Drone {
     p(this.spectralWet.gain, s2.shimmer);
     p(this.diffuseBypass.gain, 1 - s2.diffusion);
     p(this.diffuseWet.gain, s2.diffusion);
+    [this.preSaturation, this.postSaturation].forEach((stage, i) => {
+      const placement = i ? s2.saturationPost : 1 - s2.saturationPost;
+      const mix = s2.drive === 0 ? 0 : s2.saturationMix * placement;
+      p(stage.dry.gain, 1 - mix);
+      p(stage.wet.gain, mix);
+      // Voices are deliberately quiet; excite the curves then compensate drive.
+      p(stage.drive.gain, 1 + s2.drive * 12);
+      characterWeights(s2.character).forEach((weight, j) =>
+        p(stage.colors[j].gain.gain, weight / (1 + s2.drive * 6)));
+    });
     this.tailLines.forEach(({ seconds, feedback }) =>
-      p(feedback.gain, Math.min(0.89, 10 ** (-3 * seconds / s2.shimmerDecay))));
+      p(feedback.gain, Math.min(0.94, 10 ** (-3 * seconds / s2.shimmerDecay))));
     this.voices.forEach((v) => {
       if (!v) return;
       v.oscs.forEach((o, j) => p(o.detune, j ? s2.detune : -s2.detune));
@@ -435,6 +495,7 @@ export class Drone {
   async dispose() {
     this.stop();
     this.modulators?.forEach(source => { source.stop(); source.disconnect(); });
+    [this.preSaturation, this.postSaturation].forEach(stage => stage?.nodes.forEach(n => n.disconnect()));
     await this.ctx?.close();
     this.clearRetiring();
     this.ctx = null;
